@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Authors>Steven T. Pelech</Authors>
+    <Company>Steven T. Pelech</Company>
+    <Product>SimTelemetryWorkbench</Product>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+</Project>

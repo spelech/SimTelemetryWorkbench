@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+TestResults/
+playwright-report/
+test-results/
+**/bin/
+**/obj/
+data/runs/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+*.log
+.DS_Store

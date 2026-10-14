@@ -1,0 +1,185 @@
+name: Git Flow Release Pipeline
+
+on:
+  push:
+    branches:
+      - 'release/v*'
+      - 'hotfix/v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Target release version (SemVer format: e.g. 0.1.0 or v0.1.0)'
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # Stage 1: Release & Version Integrity Gate
+  verify-release:
+    name: "Stage 1: Release & Version Integrity Gate"
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.resolve-version.outputs.version }}
+      tag_name: ${{ steps.resolve-version.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve release version
+        id: resolve-version
+        run: |
+          INPUT_VER="${{ github.event.inputs.version }}"
+          REF_NAME="${{ github.ref_name }}"
+          if [ -n "$INPUT_VER" ]; then
+            RAW_VER="$INPUT_VER"
+          elif [[ "$REF_NAME" =~ ^(release|hotfix)/v(.+)$ ]]; then
+            RAW_VER="${BASH_REMATCH[2]}"
+          else
+            RAW_VER=""
+          fi
+
+          CLEAN_VER="${RAW_VER#v}"
+          echo "version=$CLEAN_VER" >> "$GITHUB_OUTPUT"
+          if [ -n "$CLEAN_VER" ]; then
+            echo "tag_name=v$CLEAN_VER" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_name=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved version: '$CLEAN_VER'"
+
+      - name: Run verification engine
+        env:
+          TARGET_VER: ${{ steps.resolve-version.outputs.version }}
+        run: |
+          if [ -n "$TARGET_VER" ]; then
+            python3 scripts/verify_release.py --ci --version "$TARGET_VER"
+          else
+            python3 scripts/verify_release.py --ci
+          fi
+          python3 scripts/verify_release.py --audit-tests
+
+  # Stage 2: Build & Quality Gates
+  build-and-test:
+    name: "Stage 2: Build & Quality Gates"
+    runs-on: ubuntu-latest
+    needs: [verify-release]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install, Lint, Test & Build
+        run: |
+          npm ci
+          npm run lint
+          npx tsc --noEmit
+          npm test
+          npm run build
+          npm run docs:build
+
+  # Stage 3: Tagging & GitHub Release Publication
+  publish-release:
+    name: "Stage 3: Tagging & GitHub Release Publication"
+    runs-on: ubuntu-latest
+    needs: [verify-release, build-and-test]
+    outputs:
+      tag_name: ${{ needs.verify-release.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create Git tag and push
+        env:
+          TAG_NAME: ${{ needs.verify-release.outputs.tag_name }}
+        run: |
+          if [ -z "$TAG_NAME" ]; then
+            echo "❌ Error: Cannot publish release without a valid tag name."
+            exit 1
+          fi
+
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️ Tag $TAG_NAME already exists."
+          else
+            echo "🏷️ Creating annotated tag: $TAG_NAME"
+            git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+            git push origin "$TAG_NAME"
+          fi
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.verify-release.outputs.tag_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️ GitHub Release $TAG_NAME already exists."
+          else
+            echo "📦 Publishing GitHub Release for $TAG_NAME..."
+            gh release create "$TAG_NAME" \
+              --title "Release $TAG_NAME" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+  # Stage 4: Git Flow Main Merge & Develop Sync
+  git-flow-sync:
+    name: "Stage 4: Git Flow Main Merge & Develop Sync"
+    runs-on: ubuntu-latest
+    needs: [verify-release, publish-release]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge tagged release into main
+        env:
+          TAG_NAME: ${{ needs.verify-release.outputs.tag_name }}
+        run: |
+          echo "🔄 Merging $TAG_NAME into main..."
+          git checkout main
+          git pull --ff-only origin main
+          git merge "$TAG_NAME" --no-ff -m "chore(release): merge $TAG_NAME into main [skip ci]"
+          git push origin main
+
+      - name: Sync main into develop
+        env:
+          TAG_NAME: ${{ needs.verify-release.outputs.tag_name }}
+        run: |
+          echo "🔄 Syncing main into develop..."
+          git checkout develop
+          git pull --ff-only origin develop
+          git merge main --no-ff -m "chore(release): sync main ($TAG_NAME) to develop [skip ci]"
+          git push origin develop

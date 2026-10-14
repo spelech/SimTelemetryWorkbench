@@ -1,0 +1,128 @@
+name: CI Quality Gates
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+      - 'feat/**'
+      - 'release/**'
+      - 'hotfix/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Stage 1: Release, Link Integrity & Anti-Test-Theatre Gate
+  release-verification:
+    name: "Stage 1: Release & Anti-Theatre Gate"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Version Synchronization & Link Integrity Gate
+        run: python3 scripts/verify_release.py --skip-tests --ci
+
+      - name: Run Static Anti-Test-Theatre Audit
+        run: python3 scripts/verify_release.py --audit-tests
+
+  # Stage 2A: TypeScript, React, Vitest & VitePress Gate
+  typescript-and-docs:
+    name: "Stage 2A: Lint, Typecheck, Vitest & Docs (Node 22)"
+    runs-on: ubuntu-latest
+    needs: [release-verification]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint (0 max warnings)
+        run: npm run lint
+
+      - name: Run TypeScript Typecheck
+        run: npx tsc --noEmit
+
+      - name: Run Vitest Unit & Simulation Harness Suite
+        run: npm test
+
+      - name: Build Production Web Assets
+        run: npm run build
+
+      - name: Build VitePress Living Documentation
+        run: npm run docs:build
+
+  # Stage 2B: Native Windows .NET Patcher Build Gate
+  dotnet-tools:
+    name: "Stage 2B: SimHubPatcher Build (.NET)"
+    runs-on: windows-latest
+    needs: [release-verification]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build SimHubPatcher (Release)
+        run: dotnet build tools/SimHubPatcher/SimHubPatcher.csproj --configuration Release
+
+  # Stage 3: Fullstack Integration Smoke Gate
+  smoke:
+    name: "Stage 3: Fullstack Integration Smoke Gate"
+    runs-on: ubuntu-latest
+    needs: [typescript-and-docs, dotnet-tools]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Spawn Backend Server & Probe /health and /api/runs
+        run: |
+          npx tsx src/server/index.ts &
+          APP_PID=$!
+          echo "Backend started with PID $APP_PID"
+
+          for i in {1..20}; do
+            if curl -sf http://127.0.0.1:4400/health > /dev/null && curl -sf http://127.0.0.1:4400/api/runs > /dev/null; then
+              echo "✅ Fullstack smoke check passed (/health and /api/runs returned 200 OK)!"
+              kill $APP_PID
+              exit 0
+            fi
+            sleep 0.5
+          done
+
+          echo "❌ Fullstack smoke check timed out!"
+          kill $APP_PID || true
+          exit 1

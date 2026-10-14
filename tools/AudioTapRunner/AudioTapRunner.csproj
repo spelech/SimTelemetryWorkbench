@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="NAudio.Core">
+      <HintPath>C:\Program Files (x86)\SimHub\NAudio.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.Wasapi">
+      <HintPath>C:\Program Files (x86)\SimHub\NAudio.Wasapi.dll</HintPath>
+    </Reference>
+    <Reference Include="SimHub.ScreenCapture">
+      <HintPath>C:\Program Files (x86)\SimHub\SimHub.ScreenCapture.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+</Project>
